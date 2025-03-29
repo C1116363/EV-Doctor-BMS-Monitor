@@ -1,131 +1,256 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
-
-import React from 'react';
-import type {PropsWithChildren} from 'react';
-import {
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
+import React, { useState, useEffect } from 'react';
+import { 
+    View, Text, PermissionsAndroid, TouchableOpacity, FlatList, Alert, StyleSheet 
 } from 'react-native';
+import RNBluetoothClassic, { BluetoothDevice } from 'react-native-bluetooth-classic';
 
-import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
+const App: React.FC = () => {
+    const [enabled, setEnabled] = useState<boolean>(false);
+    const [pairedDevices, setPairedDevices] = useState<BluetoothDevice[]>([]);
+    const [pairingDevice, setPairingDevice] = useState<string | null>(null);
+    const [connectedDevice, setConnectedDevice] = useState<BluetoothDevice | null>(null);
 
-type SectionProps = PropsWithChildren<{
-  title: string;
-}>;
+    useEffect(() => {
+        const checkBluetooth = async () => {
+            try {
+                const isEnabled = await RNBluetoothClassic.isBluetoothEnabled();
+                setEnabled(isEnabled);
+            } catch (error) {
+                console.error("Error checking Bluetooth status:", error);
+            }
+        };
+        checkBluetooth();
+        getPairedDevices();
+    }, []);
 
-function Section({children, title}: SectionProps): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
-  return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
-    </View>
-  );
-}
+    const requestLocationPermission = async () => {
+        try {
+            const granted = await PermissionsAndroid.request(
+                PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+                {
+                    title: 'Location Permission Required',
+                    message: 'Location is needed for Bluetooth device discovery.',
+                    buttonNeutral: 'Ask Me Later',
+                    buttonNegative: 'Cancel',
+                    buttonPositive: 'OK'
+                }
+            );
+            return granted === PermissionsAndroid.RESULTS.GRANTED;
+        } catch (error) {
+            console.error("Error requesting permission:", error);
+            return false;
+        }
+    };
 
-function App(): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+    const connectWithDevice = async (device: BluetoothDevice) => {
+        setPairingDevice(String(device.address));
+        console.log(`Attempting to connect: ${device.address}`);
+        
+        try {
+            let alreadyConnected = await device.isConnected();
+            let connected = alreadyConnected || await device.connect();
 
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
-  };
+            if (connected) {
+                setConnectedDevice(device);
+                console.log(`Connected to ${device.name}`);
+            }
+        } catch (error) {
+            console.error("Connection failed:", error);
+            Alert.alert("Connection Failed", "Could not connect to device.");
+        }
 
-  /*
-   * To keep the template simple and small we're adding padding to prevent view
-   * from rendering under the System UI.
-   * For bigger apps the reccomendation is to use `react-native-safe-area-context`:
-   * https://github.com/AppAndFlow/react-native-safe-area-context
-   *
-   * You can read more about it here:
-   * https://github.com/react-native-community/discussions-and-proposals/discussions/827
-   */
-  const safePadding = '5%';
+        setPairingDevice(null);
+    };
 
-  return (
-    <View style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <ScrollView
-        style={backgroundStyle}>
-        <View style={{paddingRight: safePadding}}>
-          <Header/>
+    const sendCommandToSerial = async (command: string) => {
+        if (!connectedDevice) {
+            Alert.alert("No Device Connected", "Please connect a device first.");
+            return;
+        }
+
+        try {
+            const success = await connectedDevice.write(command + "\n", "utf-8");
+            if (success) {
+                console.log(`Sent: ${command}`);
+                Alert.alert("Command Sent", `Sent "${command}" to ${connectedDevice.name}`);
+            } else {
+                Alert.alert("Send Failed", "Failed to send data.");
+            }
+        } catch (error) {
+            console.error("Error sending data:", error);
+            Alert.alert("Error", "Could not send data.");
+        }
+    };
+
+    const getPairedDevices = async () => {
+        try {
+            const bleEnabled = await RNBluetoothClassic.isBluetoothEnabled();
+            if (!bleEnabled) {
+                const success = await RNBluetoothClassic.requestBluetoothEnabled();
+                if (!success) {
+                    Alert.alert("Bluetooth Required", "Please enable Bluetooth.");
+                    return;
+                }
+            }
+
+            const permissionGranted = await requestLocationPermission();
+            if (!permissionGranted) return;
+
+            const devices = await RNBluetoothClassic.getBondedDevices();
+            setPairedDevices(devices);
+        } catch (err) {
+            console.error("Error fetching paired devices:", err);
+        }
+    };
+
+    return (
+        <View style={styles.container}>
+            {/* 🔹 Show Bluetooth status at the top left */}
+            {connectedDevice && (
+                <Text style={styles.bleStatus}>
+                    🔵 Bluetooth Connected: {connectedDevice.name || "Unknown Device"}
+                </Text>
+            )}
+
+            {connectedDevice ? (
+                // 🔹 Show command buttons after connection
+                <View style={styles.commandContainer}>
+                    <Text style={styles.commandTitle}>Send Commands</Text>
+
+                    <View style={styles.commandButtons}>
+                        <TouchableOpacity 
+                            onPress={() => sendCommandToSerial("command1")} 
+                            style={[styles.commandButton, { backgroundColor: 'green' }]}
+                        >
+                            <Text style={styles.commandText}>Eng RPM</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                            onPress={() => sendCommandToSerial("command2")} 
+                            style={[styles.commandButton, { backgroundColor: 'red' }]}
+                        >
+                            <Text style={styles.commandText}>Speed</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                            onPress={() => sendCommandToSerial("command3")} 
+                            style={[styles.commandButton, { backgroundColor: 'blue' }]}
+                        >
+                            <Text style={styles.commandText}>Batt. V</Text>
+                        </TouchableOpacity>
+                    </View>
+
+                    {/* 🔹 Show Bluetooth connection status below command buttons */}
+                    <Text style={styles.bleConnectedText}>
+                        🔵 Connected to: {connectedDevice.name || "Unknown Device"}
+                    </Text>
+                </View>
+            ) : (
+                // 🔹 Show Bluetooth pairing UI if no device is connected
+                <View style={styles.bluetoothContainer}>
+                    <Text style={styles.header}>OBD2 Bluetooth Adapter</Text>
+
+                    <TouchableOpacity 
+                        onPress={getPairedDevices} 
+                        style={styles.reloadButton}
+                    >
+                        <Text style={styles.reloadText}>Reload Paired Devices</Text>
+                    </TouchableOpacity>
+
+                    <FlatList
+                        data={pairedDevices}
+                        keyExtractor={(item) => item.address}
+                        renderItem={({ item }) => (
+                            <TouchableOpacity 
+                                onPress={() => connectWithDevice(item)} 
+                                style={[
+                                    styles.deviceButton, 
+                                    pairingDevice === item.address && styles.connecting
+                                ]}
+                                disabled={pairingDevice === item.address}
+                            >
+                                <Text style={styles.deviceName}>{item.name || "Unknown Device"}</Text>
+                                <Text style={styles.deviceAddress}>{item.address}</Text>
+                                {pairingDevice === item.address && <Text style={styles.connectingText}>Connecting...</Text>}
+                            </TouchableOpacity>
+                        )}
+                    />
+                </View>
+            )}
         </View>
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-            paddingHorizontal: safePadding,
-            paddingBottom: safePadding,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.tsx</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
-        </View>
-      </ScrollView>
-    </View>
-  );
-}
+    );
+};
 
 const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
-  },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
-  },
-  highlight: {
-    fontWeight: '700',
-  },
+    container: {
+        flex: 1, 
+        padding: 20, 
+        alignItems: 'center', 
+        justifyContent: 'center'
+    },
+    bluetoothContainer: {
+        alignItems: 'center',
+        justifyContent: 'center'
+    },
+    header: {
+        fontSize: 20, 
+        fontWeight: 'bold', 
+        textAlign: 'center',
+        marginBottom: 10
+    },
+    reloadButton: {
+        backgroundColor: 'blue', 
+        padding: 10, 
+        borderRadius: 5, 
+        marginBottom: 10
+    },
+    reloadText: {
+        color: 'white', 
+        fontSize: 16
+    },
+    deviceButton: {
+        padding: 10,
+        marginVertical: 5,
+        borderRadius: 5,
+        backgroundColor: "#ddd"
+    },
+    connecting: {
+        backgroundColor: "gray"
+    },
+    deviceName: {
+        fontSize: 16
+    },
+    deviceAddress: {
+        fontSize: 14, 
+        color: 'gray'
+    },
+    connectingText: {
+        fontSize: 14, 
+        color: 'blue'
+    },
+    commandContainer: {
+        alignItems: 'center',
+        justifyContent: 'center'
+    },
+    bleStatus: {
+        fontSize: 16, 
+        fontWeight: 'bold', 
+        color: 'green', 
+        position: 'absolute', 
+        top: 10, 
+        left: 10
+    },
+    bleConnectedText: {
+        fontSize: 16, 
+        fontWeight: 'bold', 
+        color: 'green', 
+        marginTop: 20
+    },
+    commandTitle: {
+        fontSize: 20, 
+        fontWeight: 'bold', 
+        marginBottom: 20
+    }
 });
 
 export default App;
