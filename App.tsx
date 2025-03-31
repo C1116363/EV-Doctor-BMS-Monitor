@@ -51,11 +51,11 @@ const App: React.FC = () => {
 
             response = (await connectedDevice.read()).toString();
             response = response.trim();
-            if (response){
-                if (response != "ok" && response != "error" && response != "ESP32: Connection Established" && response.startsWith(commandData)){
+            if (response) {
+                if (response != "ok" && response != "error" && response != "ESP32: Connection Established" && response.startsWith(commandData)) {
                     Alert.alert("Data Received", response);
                     setReceivedData(response);
-                } 
+                }
                 break; // Exit loop if response is received
             }
             attempts++;
@@ -84,15 +84,15 @@ const App: React.FC = () => {
     const connectWithDevice = async (device: BluetoothDevice) => {
         setPairingDevice(String(device.address)); // Set pairing state to show UI feedback
         console.log(String(device.address));
-        
+
         let deviceAlready = await device.isConnected();
         let connected = await device.connect();
 
-        if (connected){
-          setConnectedDevice(device); // Store connected device
-          console.log(`Connected to ${device.name}`);
-          Alert.alert("Access Granted", "You are authenticated.");
-          setIsAuthenticated(true);
+        if (connected) {
+            setConnectedDevice(device); // Store connected device
+            console.log(`Connected to ${device.name}`);
+            Alert.alert("Access Granted", "You are authenticated.");
+            setIsAuthenticated(true);
         }
 
         setPairingDevice(null); // Reset pairing state after attempt
@@ -110,14 +110,14 @@ const App: React.FC = () => {
             const success = await connectedDevice.write(commandWithNewline, "utf-8");
             if (success) {
                 console.log(`Sent: ${command}`);
-                if(command=="command1"){
+                if (command == "command1") {
                     Alert.alert("Command Sent", `Sent "Restart" to ${connectedDevice.name}`);
-                } else if(command=="command2"){
+                } else if (command == "command2") {
                     Alert.alert("Command Sent", `Sent "Reconnect to WiFi" to ${connectedDevice.name}`);
-                } else{
+                } else {
                     Alert.alert("Command Sent", `Sent "${command}" to ${connectedDevice.name}`);
                 }
-                
+
             } else {
                 Alert.alert("Send Failed", "Failed to send data.");
             }
@@ -127,34 +127,85 @@ const App: React.FC = () => {
         }
     };
 
-    const getallPairedDevices = async () => {
-      const bleEnabled = await RNBluetoothClassic.isBluetoothEnabled();
-      if(!bleEnabled){
-          const bleEnabledSuccess = await RNBluetoothClassic.requestBluetoothEnabled();
-          if (! bleEnabledSuccess) {
-              Alert.alert("Permission Denied", "Bluetooth NOT enabled");
-              return;
-          } 
-      }
-
-      try {
-        const granted = await onStartrequestAccessFineLocationPermission();
-        if (!granted) {
-            console.log("Location permission denied");
+    const sendAmbientTempCommand = async () => {
+        if (!connectedDevice) {
+            Alert.alert("No Device Connected", "Please pair and connect a device first.");
             return;
         }
 
-        const pairedDevices = await RNBluetoothClassic.getBondedDevices();
-        if (pairedDevices) {
-          console.log(pairedDevices);
-          setDiscoveredPairedDevices(pairedDevices);
-        } else {
-          console.log("No paired Devices found");
-        }
-      } catch(err) {
-        console.log(err);
+        try {
+            const command = "01 46\r"; // OBD2 command for ambient temperature
+            const success = await connectedDevice.write(command, "utf-8");
 
-      }
+            if (success) {
+                console.log(`Sent: ${command}`);
+                Alert.alert("Command Sent", `Requested Ambient Air Temperature`);
+
+                AmbientAir(); // Start listening for response
+            } else {
+                Alert.alert("Send Failed", "Failed to send the command.");
+            }
+        } catch (error) {
+            console.error("Error sending command:", error);
+            Alert.alert("Error", "Could not send command.");
+        }
+    };
+
+    const AmbientAir = async () => {
+        if (!connectedDevice) return;
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        let response = "";
+        let attempts = 0;
+        const maxAttempts = 10;
+
+        while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 sec
+
+            response = (await connectedDevice.read()).toString().trim();
+            console.log("Raw Response:", response);
+
+            if (response.startsWith("41 46")) {
+                const tempHex = response.split(" ")[2]; // Get the XX value
+                const tempC = parseInt(tempHex, 16) - 40; // Convert and adjust
+
+                Alert.alert("Ambient Temperature", `Temperature: ${tempC}°C`);
+                setReceivedData(`Ambient Temperature: ${tempC}°C`);
+                break;
+            }
+            attempts++;
+        }
+    };
+
+
+    const getallPairedDevices = async () => {
+        const bleEnabled = await RNBluetoothClassic.isBluetoothEnabled();
+        if (!bleEnabled) {
+            const bleEnabledSuccess = await RNBluetoothClassic.requestBluetoothEnabled();
+            if (!bleEnabledSuccess) {
+                Alert.alert("Permission Denied", "Bluetooth NOT enabled");
+                return;
+            }
+        }
+
+        try {
+            const granted = await onStartrequestAccessFineLocationPermission();
+            if (!granted) {
+                console.log("Location permission denied");
+                return;
+            }
+
+            const pairedDevices = await RNBluetoothClassic.getBondedDevices();
+            if (pairedDevices) {
+                console.log(pairedDevices);
+                setDiscoveredPairedDevices(pairedDevices);
+            } else {
+                console.log("No paired Devices found");
+            }
+        } catch (err) {
+            console.log(err);
+
+        }
     };
 
     const sendCommandData = async () => {
@@ -186,14 +237,14 @@ const App: React.FC = () => {
 
     return (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <View style={{ justifyContent:'center', alignItems:'center'}}>
-            <Text style={{ padding: 10, borderRadius: 5, marginVertical: 10, fontWeight: 'bold', fontSize: 20, justifyContent:'center', textAlign:'center'}}>Welcome to OBD2 Bluetooth Adapter</Text>
-          </View>
+            <View style={{ justifyContent: 'center', alignItems: 'center' }}>
+                <Text style={{ padding: 10, borderRadius: 5, marginVertical: 10, fontWeight: 'bold', fontSize: 20, justifyContent: 'center', textAlign: 'center' }}>Welcome to OBD2 Bluetooth Adapter</Text>
+            </View>
             {/* <Text style={{ fontSize: 18, fontWeight: 'bold' }}>Bluetooth is {enabled ? "Enabled" : "Disabled"}</Text> */}
 
             {/* Start Discovery Button */}
-            <TouchableOpacity 
-                onPress={getallPairedDevices} 
+            <TouchableOpacity
+                onPress={getallPairedDevices}
                 style={{ backgroundColor: 'blue', padding: 10, borderRadius: 5, marginVertical: 10 }}
             >
                 <Text style={{ color: 'white', fontSize: 16 }}>Reload Paired Devices</Text>
@@ -204,8 +255,8 @@ const App: React.FC = () => {
                 data={ifdiscoveredPairedDevices}
                 keyExtractor={(item) => item.address}
                 renderItem={({ item }) => (
-                    <TouchableOpacity 
-                        onPress={() => connectWithDevice(item)} 
+                    <TouchableOpacity
+                        onPress={() => connectWithDevice(item)}
                         style={{
                             padding: 10,
                             marginVertical: 5,
@@ -220,31 +271,38 @@ const App: React.FC = () => {
                     </TouchableOpacity>
                 )}
             />
-            
+
             {connectedDevice && (
                 <View>
-                  <Text style={{ padding: 10, borderRadius: 5, marginVertical: 10, fontWeight: 'bold', fontSize: 20}}>Test Commands</Text>
+                    <Text style={{ padding: 10, borderRadius: 5, marginVertical: 10, fontWeight: 'bold', fontSize: 20 }}>Test Commands</Text>
                     <View style={{ flexDirection: 'row', marginTop: 20 }}>
-                        <TouchableOpacity 
-                            onPress={() => sendCommandToSerial("command1")} 
+                        <TouchableOpacity
+                            onPress={() => sendCommandToSerial("command1")}
                             style={{ backgroundColor: 'green', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
                         >
                             <Text style={{ color: 'white', fontSize: 16 }}>Eng RPM</Text>
                         </TouchableOpacity>
 
-                        <TouchableOpacity 
-                            onPress={() => sendCommandToSerial("command2")} 
+                        <TouchableOpacity
+                            onPress={() => sendCommandToSerial("command2")}
                             style={{ backgroundColor: 'red', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
                         >
                             <Text style={{ color: 'white', fontSize: 16 }}>Speed</Text>
                         </TouchableOpacity>
 
-                        <TouchableOpacity 
-                            onPress={() => sendCommandToSerial("command3")} 
+                        <TouchableOpacity
+                            onPress={() => sendCommandToSerial("command3")}
                             style={{ backgroundColor: 'red', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
                         >
                             <Text style={{ color: 'white', fontSize: 16 }}>Batt. V</Text>
                         </TouchableOpacity>
+                        <TouchableOpacity
+                            onPress={sendAmbientTempCommand}
+                            style={{ backgroundColor: 'orange', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
+                        >
+                            <Text style={{ color: 'white', fontSize: 16 }}>Ambient Air Temp</Text>
+                        </TouchableOpacity>
+
                     </View>
                 </View>
             )}
