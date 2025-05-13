@@ -12,7 +12,8 @@
   "dependencies": {
     "react": "19.0.0",
     "react-native": "0.78.1",
-    "react-native-bluetooth-classic": "^1.73.0-rc.13"
+    "react-native-ble-plx": "^3.5.0",
+    "react-native-permissions": "^5.4.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

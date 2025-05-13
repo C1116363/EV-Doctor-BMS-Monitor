@@ -1,35 +1,57 @@
-# Resolve react_native_pods.rb with node to allow for hoisting
+# ios/Podfile
+
+# Resolve react_native_pods.rb path using Node
 require Pod::Executable.execute_command('node', ['-p',
   'require.resolve(
     "react-native/scripts/react_native_pods.rb",
     {paths: [process.argv[1]]},
   )', __dir__]).strip
 
-platform :ios, min_ios_version_supported
+# Set minimum iOS version (recommended 12.4+ for React Native)
+platform :ios, '13.0'  # Tesla BMS apps should target at least iOS 13
+
+# Prepare React Native project
 prepare_react_native_project!
 
+# Framework linking configuration (optional)
 linkage = ENV['USE_FRAMEWORKS']
-if linkage != nil
+if linkage
   Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
   use_frameworks! :linkage => linkage.to_sym
 end
 
 target 'OB2' do
+  # Native modules configuration
   config = use_native_modules!
 
+  # React Native main configuration
   use_react_native!(
     :path => config[:reactNativePath],
-    # An absolute path to your application root.
-    :app_path => "#{Pod::Config.instance.installation_root}/.."
+    :app_path => "#{Pod::Config.instance.installation_root}/..",
+    :hermes_enabled => false  # Enable if using Hermes
   )
 
+  # Tesla BMS specific pods
+  pod 'ReactNativeBLEPLX', :path => '../node_modules/react-native-ble-plx'
+  pod 'Permission-BluetoothPeripheral', :path => '../node_modules/react-native-permissions'
+
+  # Post-install hooks
   post_install do |installer|
-    # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202
     react_native_post_install(
       installer,
       config[:reactNativePath],
       :mac_catalyst_enabled => false,
-      # :ccache_enabled => true
+      :flipper_enabled => false  # Disable if not using Flipper
     )
+    
+    # Required for BLE on iOS
+    installer.pods_project.build_configurations.each do |config|
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'RCT_NEW_ARCH_ENABLED=1' if ENV['RCT_NEW_ARCH_ENABLED'] == '1'
+      
+      # Enable these for Bluetooth background modes
+      config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -framework CoreBluetooth'
+      config.build_settings['ENABLE_BITCODE'] = 'NO'
+    end
   end
 end

@@ -1,366 +1,490 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, PermissionsAndroid, TouchableOpacity, FlatList, Animated, Alert, TextInput, StyleSheet, ScrollView } from 'react-native';
-import RNBluetoothClassic, { BluetoothDevice } from 'react-native-bluetooth-classic';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, TouchableOpacity, FlatList, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import { BleManager, Device } from 'react-native-ble-plx';
+import { request, PERMISSIONS, RESULTS } from 'react-native-permissions';
+import { Buffer } from 'buffer';
 
-const App: React.FC = () => {
-    const [enabled, setEnabled] = useState<boolean>(false);
-    const [ifdiscoveredPairedDevices, setDiscoveredPairedDevices] = useState<BluetoothDevice[]>([]);
-    const [pairingDevice, setPairingDevice] = useState<string | null>(null);
-    const [connectedDevice, setConnectedDevice] = useState<BluetoothDevice | null>(null); // 🔹 Store connected device
-    const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false); // Track authentication
+interface BatteryCell {
+  id: number;
+  voltage: number | null;
+  isCritical: boolean;
+}
 
-    const [commandData, setCommandData] = useState<string>('');
+interface BatteryModule {
+  id: number;
+  cells: BatteryCell[];
+}
 
-    const [receivedData, setReceivedData] = useState<string>(''); // 🔹 Store received data
+interface GlobalVoltageStats {
+  maxVoltage: number;
+  minVoltage: number;
+  voltageDiff: number;
+  lastUpdate: string;
+}
 
-    useEffect(() => {
-        const checkBluetooth = async () => {
-            try {
-                const isEnabled = await RNBluetoothClassic.isBluetoothEnabled();
-                setEnabled(isEnabled);
-            } catch (error) {
-                console.error("Error checking Bluetooth status:", error);
-            }
-        };
-        checkBluetooth();
-        getallPairedDevices();
-    }, []);
-
-
-    const startListeningForData = async () => {
-        if (!connectedDevice) return;
-        await new Promise(resolve => setTimeout(resolve, 500)); // Wait 1000ms before reading
-
-        // try {
-        //     connectedDevice.onDataReceived((event) => {
-        //         // console.log(`Received: ${event.data}`);
-        //         Alert.alert("Data Received", event.data);
-        //         setReceivedData((prevData) => prevData + '\n' + event.data); // Append new data
-        //     });
-
-        // } catch (error) {
-        //     console.error("Error listening for data:", error);
-        // }
-        // Read ESP32 response
-        let response = "";
-        let attempts = 0;
-        const maxAttempts = 10; // Adjust based on expected response time
-
-        while (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1000ms before reading
-
-            response = (await connectedDevice.read()).toString();
-            response = response.trim();
-            if (response) {
-                if (response != "ok" && response != "error" && response != "ESP32: Connection Established" && response.startsWith(commandData)) {
-                    Alert.alert("Data Received", response);
-                    setReceivedData(response);
-                }
-                break; // Exit loop if response is received
-            }
-            attempts++;
-        }
-    };
-
-    const onStartrequestAccessFineLocationPermission = async () => {
-        try {
-            const granted = await PermissionsAndroid.request(
-                PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-                {
-                    title: 'Access fine location required for discovery',
-                    message: 'Enable location to allow Bluetooth discovery.',
-                    buttonNeutral: 'Ask Me Later',
-                    buttonNegative: 'Cancel',
-                    buttonPositive: 'OK'
-                }
-            );
-            return granted === PermissionsAndroid.RESULTS.GRANTED;
-        } catch (error) {
-            console.error("Error requesting permission:", error);
-            return false;
-        }
-    };
-
-    const connectWithDevice = async (device: BluetoothDevice) => {
-        setPairingDevice(String(device.address)); // Set pairing state to show UI feedback
-        console.log(String(device.address));
-
-        let deviceAlready = await device.isConnected();
-        let connected = await device.connect();
-
-        if (connected) {
-            setConnectedDevice(device); // Store connected device
-            console.log(`Connected to ${device.name}`);
-            Alert.alert("Access Granted", "You are authenticated.");
-            setIsAuthenticated(true);
-        }
-
-        setPairingDevice(null); // Reset pairing state after attempt
-    };
-
-    // 🔹 Function to send data ("command") to the connected device
-    const sendCommandToSerial = async (command: string) => {
-        if (!connectedDevice) {
-            Alert.alert("No Device Connected", "Please pair and connect a device first.");
-            return;
-        }
-
-        try {
-            const commandWithNewline = command + "\n"; // Append newline
-            const success = await connectedDevice.write(commandWithNewline, "utf-8");
-            if (success) {
-                console.log(`Sent: ${command}`);
-                if (command == "command1") {
-                    Alert.alert("Command Sent", `Sent "Restart" to ${connectedDevice.name}`);
-                } else if (command == "command2") {
-                    Alert.alert("Command Sent", `Sent "Reconnect to WiFi" to ${connectedDevice.name}`);
-                } else {
-                    Alert.alert("Command Sent", `Sent "${command}" to ${connectedDevice.name}`);
-                }
-
-            } else {
-                Alert.alert("Send Failed", "Failed to send data.");
-            }
-        } catch (error) {
-            console.error("Error sending data:", error);
-            Alert.alert("Error", "Could not send data. Click on device to reconnecting");
-        }
-    };
-
-    const sendAmbientTempCommand = async () => {
-        if (!connectedDevice) {
-            Alert.alert("No Device Connected", "Please pair and connect a device first.");
-            return;
-        }
-
-        try {
-            const command = "01 46\r"; // OBD2 command for ambient temperature
-            const success = await connectedDevice.write(command, "utf-8");
-
-            if (success) {
-                console.log(`Sent: ${command}`);
-                Alert.alert("Command Sent", `Requested Ambient Air Temperature`);
-
-                AmbientAir(); // Start listening for response
-            } else {
-                Alert.alert("Send Failed", "Failed to send the command.");
-            }
-        } catch (error) {
-            console.error("Error sending command:", error);
-            Alert.alert("Error", "Could not send command.");
-        }
-    };
-
-    const AmbientAir = async () => {
-        if (!connectedDevice) return;
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        let response = "";
-        let attempts = 0;
-        const maxAttempts = 10;
-
-        while (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 sec
-
-            response = (await connectedDevice.read()).toString().trim();
-            console.log("Raw Response:", response);
-
-            if (response.startsWith("41 46")) {
-                const tempHex = response.split(" ")[2]; // Get the XX value
-                const tempC = parseInt(tempHex, 16) - 40; // Convert and adjust
-
-                Alert.alert("Ambient Temperature", `Temperature: ${tempC}°C`);
-                setReceivedData(`Ambient Temperature: ${tempC}°C`);
-                break;
-            }
-            attempts++;
-        }
-    };
-
-
-    const getallPairedDevices = async () => {
-        const bleEnabled = await RNBluetoothClassic.isBluetoothEnabled();
-        if (!bleEnabled) {
-            const bleEnabledSuccess = await RNBluetoothClassic.requestBluetoothEnabled();
-            if (!bleEnabledSuccess) {
-                Alert.alert("Permission Denied", "Bluetooth NOT enabled");
-                return;
-            }
-        }
-
-        try {
-            const granted = await onStartrequestAccessFineLocationPermission();
-            if (!granted) {
-                console.log("Location permission denied");
-                return;
-            }
-
-            const pairedDevices = await RNBluetoothClassic.getBondedDevices();
-            if (pairedDevices) {
-                console.log(pairedDevices);
-                setDiscoveredPairedDevices(pairedDevices);
-            } else {
-                console.log("No paired Devices found");
-            }
-        } catch (err) {
-            console.log(err);
-
-        }
-    };
-
-    const sendCommandData = async () => {
-        if (!connectedDevice) {
-            Alert.alert("No Device Connected", "Please pair and connect a device first.");
-            return;
-        }
-
-        const cmdData = `${commandData}\n`; // Format data
-
-        try {
-            const success = await connectedDevice.write(cmdData, "utf-8");
-            if (success) {
-                console.log(`Sent: ${cmdData}`);
-                Alert.alert("Data Sent", "Data sent successfully.");
-
-                startListeningForData();
-
-                //clear the auth fields
-                setCommandData('');
-            } else {
-                Alert.alert("Send Failed", "Failed to send command data.");
-            }
-        } catch (error) {
-            console.error("Error sending data:", error);
-            Alert.alert("Error", "Could not send command data.");
-        }
-    };
-
-    return (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-            <View style={{ justifyContent: 'center', alignItems: 'center' }}>
-                <Text style={{ padding: 10, borderRadius: 5, marginVertical: 10, fontWeight: 'bold', fontSize: 20, justifyContent: 'center', textAlign: 'center' }}>Welcome to OBD2 Bluetooth Adapter</Text>
-            </View>
-            {/* <Text style={{ fontSize: 18, fontWeight: 'bold' }}>Bluetooth is {enabled ? "Enabled" : "Disabled"}</Text> */}
-
-            {/* Start Discovery Button */}
-            <TouchableOpacity
-                onPress={getallPairedDevices}
-                style={{ backgroundColor: 'blue', padding: 10, borderRadius: 5, marginVertical: 10 }}
-            >
-                <Text style={{ color: 'white', fontSize: 16 }}>Reload Paired Devices</Text>
-            </TouchableOpacity>
-
-            {/* List of discovered devices */}
-            <FlatList
-                data={ifdiscoveredPairedDevices}
-                keyExtractor={(item) => item.address}
-                renderItem={({ item }) => (
-                    <TouchableOpacity
-                        onPress={() => connectWithDevice(item)}
-                        style={{
-                            padding: 10,
-                            marginVertical: 5,
-                            borderRadius: 5,
-                            backgroundColor: pairingDevice === item.address ? "gray" : "#ddd"
-                        }}
-                        disabled={pairingDevice === item.address}
-                    >
-                        <Text style={{ fontSize: 16 }}>{item.name || "Unknown Device"}</Text>
-                        <Text style={{ fontSize: 14, color: 'gray' }}>{item.address}</Text>
-                        {pairingDevice === item.address && <Text style={{ fontSize: 14, color: 'blue' }}>Connecting...</Text>}
-                    </TouchableOpacity>
-                )}
-            />
-
-            {connectedDevice && (
-                <View>
-                    <Text style={{ padding: 10, borderRadius: 5, marginVertical: 10, fontWeight: 'bold', fontSize: 20 }}>Test Commands</Text>
-                    <View style={{ flexDirection: 'row', marginTop: 20 }}>
-                        <TouchableOpacity
-                            onPress={() => sendCommandToSerial("command1")}
-                            style={{ backgroundColor: 'green', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
-                        >
-                            <Text style={{ color: 'white', fontSize: 16 }}>Eng RPM</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                            onPress={() => sendCommandToSerial("command2")}
-                            style={{ backgroundColor: 'red', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
-                        >
-                            <Text style={{ color: 'white', fontSize: 16 }}>Speed</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                            onPress={() => sendCommandToSerial("command3")}
-                            style={{ backgroundColor: 'red', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
-                        >
-                            <Text style={{ color: 'white', fontSize: 16 }}>Batt. V</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            onPress={sendAmbientTempCommand}
-                            style={{ backgroundColor: 'orange', padding: 10, borderRadius: 5, marginHorizontal: 5 }}
-                        >
-                            <Text style={{ color: 'white', fontSize: 16 }}>Ambient Air Temp</Text>
-                        </TouchableOpacity>
-
-                    </View>
-                </View>
-            )}
-
-            {isAuthenticated && connectedDevice && (
-                <View style={{ marginTop: 20, width: '100%' }}>
-
-
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
-                        <TextInput
-                            style={[styles.input, { flex: 1, marginRight: 5 }]} // Take up half the space with margin
-                            placeholder="Type Test Command"
-                            placeholderTextColor="#999"
-                            value={commandData}
-                            onChangeText={setCommandData}
-                        />
-                    </View>
-
-                    <TouchableOpacity
-                        onPress={sendCommandData}
-                        style={{ backgroundColor: 'blue', padding: 10, borderRadius: 5, alignItems: 'center' }}
-                    >
-                        <Text style={{ color: 'white', fontSize: 16 }}>Send Command</Text>
-                    </TouchableOpacity>
-                </View>
-            )}
-
-            {receivedData.length > 0 && (
-                <View style={styles.responseContainer}>
-                    <Text style={styles.responseHeader}>Received Data:</Text>
-                    <ScrollView style={styles.responseBox}>
-                        <Text style={styles.responseText}>{receivedData}</Text>
-                    </ScrollView>
-                </View>
-            )}
-        </View>
-    );
+const VOLTAGE_RANGE = {
+  MIN: 2.8,
+  MAX: 4.25,
+  WARNING_HIGH: 4.2,
+  WARNING_LOW: 3.2
 };
 
-const styles = StyleSheet.create({
-    header: { fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 10 },
-    subHeader: { fontSize: 18, fontWeight: 'bold', marginVertical: 10, textAlign: 'center' },
-    button: { backgroundColor: 'blue', padding: 10, borderRadius: 5, alignItems: 'center', marginVertical: 5 },
-    buttonText: { color: 'white', fontSize: 16 },
-    deviceItem: { padding: 10, marginVertical: 5, borderRadius: 5, backgroundColor: '#ddd' },
-    connecting: { backgroundColor: 'gray' },
-    connectingText: { fontSize: 14, color: 'blue' },
-    deviceText: { fontSize: 16 },
-    deviceAddress: { fontSize: 14, color: 'gray' },
-    commandButtons: { flexDirection: 'row', justifyContent: 'center', marginTop: 10 },
-    commandButton: { backgroundColor: 'green', padding: 10, borderRadius: 5, marginHorizontal: 5 },
-    inputContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-    input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 10, padding: 10, fontSize: 16, flex: 1, marginRight: 5 },
-    responseContainer: { marginTop: 20, width: '100%' },
-    responseHeader: { fontSize: 18, fontWeight: 'bold', marginBottom: 5 },
-    responseBox: { borderWidth: 1, borderColor: '#ccc', borderRadius: 5, padding: 10, maxHeight: 150 },
-    responseText: { fontSize: 16, color: 'black' },
-});
+// Tesla BMS Service UUIDs (Converted from CAN IDs)
+const TESLA_BMS_SERVICE = 'FF6F';
+const VOLTAGE_CHARACTERISTIC = 'FF6F2'; // 6F2 → FF6F2
 
+const App = () => {
+  // State
+  const [bleManager] = useState(new BleManager());
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
+  const [modules, setModules] = useState<BatteryModule[]>([]);
+  const [voltageStats, setVoltageStats] = useState<GlobalVoltageStats>({
+    maxVoltage: 0,
+    minVoltage: 0,
+    voltageDiff: 0,
+    lastUpdate: ''
+  });
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+
+  // Initialize Bluetooth
+  useEffect(() => {
+    const initBluetooth = async () => {
+      const granted = await checkBluetoothPermissions();
+      if (!granted) {
+        setError('Bluetooth permissions not granted');
+        return;
+      }
+
+      startScan();
+    };
+
+    initBluetooth();
+
+    return () => {
+      bleManager.destroy();
+    };
+  }, []);
+
+  // Check Bluetooth permissions (iOS)
+  const checkBluetoothPermissions = async () => {
+    const status = await request(PERMISSIONS.IOS.BLUETOOTH_PERIPHERAL);
+    return status === RESULTS.GRANTED;
+  };
+
+  // Scan for Tesla BMS devices
+  const startScan = () => {
+    bleManager.startDeviceScan([TESLA_BMS_SERVICE], null, (error, device) => {
+      if (error) {
+        setError(`Scan error: ${error.message}`);
+        return;
+      }
+      
+      if (device?.name?.match(/Tesla|BMS/i)) {
+        setDevices(prev => [...prev, device]);
+      }
+    });
+  };
+
+  // Connect to device
+  const connectDevice = async (device: Device) => {
+    setIsLoading(true);
+    setConnectionState('connecting');
+    setError(null);
+    
+    try {
+      const connectedDevice = await bleManager.connectToDevice(device.id, {
+        requestMTU: 185, // Tesla BMS requires larger MTU
+      });
+      
+      await connectedDevice.discoverAllServicesAndCharacteristics();
+      setConnectedDevice(connectedDevice);
+      setConnectionState('connected');
+      
+      // Start monitoring voltage data
+      connectedDevice.monitorCharacteristicForService(
+        TESLA_BMS_SERVICE,
+        VOLTAGE_CHARACTERISTIC,
+        (error, characteristic) => {
+          if (characteristic?.value) {
+            processTeslaData(characteristic.value);
+          }
+        }
+      );
+      
+    } catch (err) {
+      setError(`Connection failed: ${(err as Error).message}`);
+      setConnectionState('disconnected');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Process Tesla BMS data (Base64 encoded)
+  const processTeslaData = (base64Data: string) => {
+    const now = new Date().toLocaleTimeString();
+    const rawData = Buffer.from(base64Data, 'base64');
+    
+    // Example for Module 1 (6F2) - 8 bytes per module
+    // Byte structure: [ModuleID][Cell1_Hi][Cell1_Lo][Cell2_Hi][Cell2_Lo]...
+    const moduleId = rawData[0] - 0x6F; // Convert from 6F2 to module 1
+    const cells: BatteryCell[] = [];
+    
+    for (let i = 0; i < 6; i++) {
+      const offset = 1 + (i * 2);
+      const voltage = rawData.readUInt16BE(offset) * 0.001; // Big-endian
+      const isValid = voltage >= VOLTAGE_RANGE.MIN && voltage <= VOLTAGE_RANGE.MAX;
+      
+      cells.push({
+        id: i + 1,
+        voltage: isValid ? voltage : null,
+        isCritical: !isValid
+      });
+    }
+    
+    setModules(prev => {
+      const updatedModules = [...prev];
+      const moduleIndex = updatedModules.findIndex(m => m.id === moduleId);
+      
+      if (moduleIndex >= 0) {
+        updatedModules[moduleIndex] = { id: moduleId, cells };
+      } else {
+        updatedModules.push({ id: moduleId, cells });
+      }
+      
+      // Calculate global stats
+      const allVoltages = updatedModules
+        .flatMap(m => m.cells.map(c => c.voltage))
+        .filter(v => v !== null) as number[];
+      
+      if (allVoltages.length > 0) {
+        setVoltageStats({
+          maxVoltage: Math.max(...allVoltages),
+          minVoltage: Math.min(...allVoltages),
+          voltageDiff: Math.max(...allVoltages) - Math.min(...allVoltages),
+          lastUpdate: now
+        });
+      }
+      
+      return updatedModules;
+    });
+  };
+
+  // Disconnect device
+  const disconnectDevice = async () => {
+    if (!connectedDevice) return;
+    
+    try {
+      await bleManager.cancelDeviceConnection(connectedDevice.id);
+      setConnectedDevice(null);
+      setConnectionState('disconnected');
+      setModules([]);
+      setVoltageStats({ maxVoltage: 0, minVoltage: 0, voltageDiff: 0, lastUpdate: '' });
+    } catch (err) {
+      setError(`Disconnect failed: ${(err as Error).message}`);
+    }
+  };
+
+  // Get color based on voltage value
+  const getVoltageColor = (voltage: number | null) => {
+    if (voltage === null) return 'gray';
+    if (voltage < VOLTAGE_RANGE.MIN || voltage > VOLTAGE_RANGE.MAX) return 'black';
+    if (voltage > VOLTAGE_RANGE.WARNING_HIGH || voltage < VOLTAGE_RANGE.WARNING_LOW) return 'orange';
+    return 'green';
+  };
+
+  // Render battery module
+  const renderModule = ({ item }: { item: BatteryModule }) => (
+    <View style={styles.moduleCard}>
+      <Text style={styles.moduleTitle}>Module {item.id}</Text>
+      <View style={styles.cellContainer}>
+        {item.cells.map(cell => (
+          <View key={`module-${item.id}-cell-${cell.id}`} style={styles.cell}>
+            <Text style={styles.cellLabel}>Cell {cell.id}</Text>
+            <Text style={[styles.cellValue, { color: getVoltageColor(cell.voltage) }]}>
+              {cell.voltage ? cell.voltage.toFixed(3) + 'V' : '--'}
+            </Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.header}>Digital EV Doctor BMS Monitor</Text>
+      
+      {/* Error Display */}
+      {error && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>⚠️ {error}</Text>
+          <TouchableOpacity onPress={() => setError(null)}>
+            <Text style={styles.dismissText}>Dismiss</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      
+      {/* Connection Status */}
+      <View style={styles.statusBar}>
+        {isLoading && <ActivityIndicator size="small" color="#0000ff" />}
+        {connectionState === 'connected' && (
+          <Text style={styles.connectedText}>
+            Connected: {connectedDevice?.name}
+          </Text>
+        )}
+        {voltageStats.lastUpdate && (
+          <Text style={styles.updateText}>Last update: {voltageStats.lastUpdate}</Text>
+        )}
+      </View>
+
+      {/* Global Voltage Stats */}
+      <View style={styles.statsCard}>
+        <Text style={styles.statsTitle}></Text>
+        <View style={styles.statsGrid}>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>Max Voltage</Text>
+            <Text style={[styles.statValue, { color: getVoltageColor(voltageStats.maxVoltage) }]}>
+              {voltageStats.maxVoltage.toFixed(3)}V
+            </Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>Min Voltage</Text>
+            <Text style={[styles.statValue, { color: getVoltageColor(voltageStats.minVoltage) }]}>
+              {voltageStats.minVoltage.toFixed(3)}V
+            </Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>Voltage Diff</Text>
+            <Text style={[styles.statValue, { 
+              color: voltageStats.voltageDiff > 0.1 ? 'red' : 
+                     voltageStats.voltageDiff > 0.05 ? 'orange' : 'green' 
+            }]}>
+              {voltageStats.voltageDiff.toFixed(3)}V
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Connection Controls */}
+      {!connectedDevice ? (
+        <>
+          <View style={styles.deviceListHeader}>
+            <Text style={styles.sectionTitle}>Available Devices</Text>
+            <TouchableOpacity onPress={startScan}>
+              <Text style={styles.refreshText}>Scan Again</Text>
+            </TouchableOpacity>
+          </View>
+          
+          <FlatList
+            data={devices}
+            keyExtractor={item => item.id}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.deviceButton}
+                onPress={() => connectDevice(item)}
+                disabled={isLoading}
+              >
+                <Text style={styles.deviceName}>{item.name || 'Unknown Device'}</Text>
+                <Text style={styles.deviceAddress}>{item.id}</Text>
+              </TouchableOpacity>
+            )}
+            contentContainerStyle={styles.deviceList}
+          />
+        </>
+      ) : (
+        <TouchableOpacity
+          style={styles.disconnectButton}
+          onPress={disconnectDevice}
+          disabled={isLoading}
+        >
+          <Text style={styles.disconnectText}>Disconnect</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* Battery Modules */}
+      <Text style={styles.sectionTitle}>Battery Modules ({modules.length})</Text>
+      <FlatList
+        data={modules}
+        renderItem={renderModule}
+        keyExtractor={item => `module-${item.id}`}
+        contentContainerStyle={styles.modulesList}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>
+            {connectedDevice ? 'Waiting for BMS data...' : 'Not connected'}
+          </Text>
+        }
+      />
+    </View>
+  );
+};
+
+// Styles remain the same as in your original code
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    padding: 16,
+    backgroundColor: '#f5f5f5'
+  },
+  header: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 8,
+    color: '#333'
+  },
+  errorContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#ffebee',
+    padding: 10,
+    borderRadius: 5,
+    marginBottom: 10
+  },
+  errorText: {
+    color: '#d32f2f',
+    flex: 1
+  },
+  dismissText: {
+    color: '#1976d2',
+    marginLeft: 10
+  },
+  statusBar: {
+    marginBottom: 16,
+    minHeight: 20
+  },
+  connectedText: {
+    color: 'green',
+    fontWeight: '500'
+  },
+  updateText: {
+    color: '#666',
+    fontSize: 12
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginVertical: 8,
+    color: '#333'
+  },
+  deviceListHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8
+  },
+  refreshText: {
+    color: '#0066cc',
+    fontSize: 14
+  },
+  deviceList: {
+    paddingBottom: 16
+  },
+  deviceButton: {
+    padding: 12,
+    marginBottom: 8,
+    backgroundColor: 'white',
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#0066cc'
+  },
+  deviceName: {
+    fontWeight: '500'
+  },
+  deviceAddress: {
+    color: '#666',
+    fontSize: 12
+  },
+  disconnectButton: {
+    padding: 12,
+    backgroundColor: '#ff4444',
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: 16
+  },
+  disconnectText: {
+    color: 'white',
+    fontWeight: 'bold'
+  },
+  statsCard: {
+    backgroundColor: 'white',
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2
+  },
+  statsTitle: {
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginBottom: 12,
+    color: '#333'
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap'
+  },
+  statItem: {
+    width: '48%',
+    marginBottom: 12
+  },
+  statLabel: {
+    color: '#666',
+    fontSize: 14
+  },
+  statValue: {
+    fontSize: 18,
+    fontWeight: '500'
+  },
+  modulesList: {
+    paddingBottom: 16
+  },
+  emptyText: {
+    textAlign: 'center',
+    color: '#666',
+    marginTop: 16
+  },
+  moduleCard: {
+    backgroundColor: 'white',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1
+  },
+  moduleTitle: {
+    fontWeight: 'bold',
+    fontSize: 16,
+    color: '#333',
+    marginBottom: 8
+  },
+  cellContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between'
+  },
+  cell: {
+    width: '32%',
+    marginBottom: 8
+  },
+  cellLabel: {
+    fontSize: 12,
+    color: '#666'
+  },
+  cellValue: {
+    fontSize: 14,
+    fontWeight: '500',
+    marginVertical: 2
+  }
+});
 
 export default App;

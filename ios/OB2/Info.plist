@@ -2,6 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>We need Bluetooth to connect to your Tesla BMS</string>
+<key>NSBluetoothPeripheralUsageDescription</key>
+<string>BLE connection required for BMS monitoring</string>
+<key>UIBackgroundModes</key>
+<array>
+  <string>bluetooth-central</string>
+  <string>bluetooth-peripheral</string>
+</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
